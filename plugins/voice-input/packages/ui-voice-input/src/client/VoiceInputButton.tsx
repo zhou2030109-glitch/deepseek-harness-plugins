@@ -1,0 +1,323 @@
+/**
+ * Voice input button: records 16 kHz mono PCM through getUserMedia, encodes to
+ * WAV base64, streams re-transcriptions of the growing buffer to the composer
+ * draft, and punctuates on stop via the voiceInput Remote.
+ */
+
+import React from 'react'
+
+/** The voiceInput Remote namespace face this component consumes. */
+interface VoiceInputRemote {
+  transcribe(request: { b64: string; final: boolean }): Promise<
+    | { ok: true; value: { text: string; error?: string } }
+    | { ok: false; error: { code: string; message: string; details: object } }
+  >
+}
+
+/** Minimal structural share of the composer input actions this component drives. */
+interface VoiceInputActions {
+  setDraft(text: string): void
+}
+
+interface VoiceInputButtonProps {
+  remote?: VoiceInputRemote
+  // Selector hook over the composer input machine; typed loosely to accept the
+  // slot framework's generic SnapshotSelectorHook<InputState>.
+  useInput?: (selector: (state: { draft: string }) => string) => string
+  inputActions?: VoiceInputActions
+}
+
+interface Recording {
+  stream: MediaStream
+  audioCtx: AudioContext
+  sourceNode: MediaStreamAudioSourceNode
+  processor: ScriptProcessorNode
+  chunks: Float32Array[]
+  sampleRate: number
+  tick: number
+  transcribing: boolean
+  stopping: boolean
+  inFlight: Promise<void> | null
+}
+
+function joinText(base: string, text: string): string {
+  const t = (text || '').trim()
+  if (!t) return base || ''
+  if (!base) return t
+  return base + ' ' + t
+}
+
+function MicIcon(): React.ReactElement {
+  return React.createElement('svg', {
+    viewBox: '0 0 24 24',
+    width: 16,
+    height: 16,
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 2,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+  },
+    React.createElement('rect', { x: 9, y: 2, width: 6, height: 12, rx: 3 }),
+    React.createElement('path', { d: 'M5 10v1a7 7 0 0 0 14 0v-1' }),
+    React.createElement('line', { x1: 12, y1: 18, x2: 12, y2: 22 }),
+  )
+}
+
+/** Encode a Float32Array as base64 (raw PCM bytes, no WAV header). */
+function float32ToBase64(samples: Float32Array): string {
+  const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength)
+  const chunk = 0x8000
+  let binary = ''
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)))
+  }
+  const g: any = (typeof globalThis !== 'undefined') ? globalThis : window
+  const b64: ((s: string) => string) | undefined = (typeof btoa === 'function')
+    ? btoa
+    : (g && typeof g.btoa === 'function' ? g.btoa : undefined)
+  if (b64) return b64(binary)
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  let out = ''
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b1 = bytes[i]!
+    const b2 = (i + 1 < bytes.length) ? bytes[i + 1]! : 0
+    const b3 = (i + 2 < bytes.length) ? bytes[i + 2]! : 0
+    out += chars[b1 >> 2]
+    out += chars[((b1 & 3) << 4) | (b2 >> 4)]
+    out += (i + 1 < bytes.length) ? chars[((b2 & 15) << 2) | (b3 >> 6)] : '='
+    out += (i + 2 < bytes.length) ? chars[b3 & 63] : '='
+  }
+  return out
+}
+
+/** Linear-interpolation resample to 16 kHz (the model's expected rate). */
+function resampleTo16k(samples: Float32Array, fromRate: number): Float32Array {
+  if (fromRate === 16000) return samples
+  const ratio = 16000 / fromRate
+  const newLen = Math.round(samples.length * ratio)
+  const out = new Float32Array(newLen)
+  for (let i = 0; i < newLen; i++) {
+    const srcIdx = i / ratio
+    const lo = Math.floor(srcIdx)
+    const hi = Math.min(lo + 1, samples.length - 1)
+    const frac = srcIdx - lo
+    out[i] = samples[lo]! * (1 - frac) + samples[hi]! * frac
+  }
+  return out
+}
+
+/** Check if samples are effectively silent (all near-zero). */
+function isSilent(samples: Float32Array): boolean {
+  let max = 0
+  for (let i = 0; i < samples.length; i++) {
+    const a = Math.abs(samples[i]!)
+    if (a > max) max = a
+  }
+  return max < 0.001
+}
+
+const VOICE_CSS = `
+.dsh-voice-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.dsh-voice-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; margin: 0; padding: 0;
+  border: none; border-radius: 999px; background: transparent;
+  color: currentColor; opacity: 0.85; cursor: pointer; flex-shrink: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.dsh-voice-btn:hover { opacity: 1; background-color: rgba(128, 128, 128, 0.14); }
+.dsh-voice-btn:disabled { cursor: default; }
+.dsh-voice-btn.is-listening {
+  color: #ef4444; opacity: 1; background-color: rgba(239, 68, 68, 0.14);
+  animation: dsh-voice-pulse 1.4s ease-in-out infinite;
+}
+.dsh-voice-btn.is-busy { color: #f59e0b; opacity: 1; animation: dsh-voice-busy 1s ease-in-out infinite; }
+.dsh-voice-btn.is-error { color: #ef4444; opacity: 1; }
+@keyframes dsh-voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+@keyframes dsh-voice-busy { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+.dsh-voice-error {
+  font-size: 11px; line-height: 1.2; color: #ef4444; white-space: nowrap;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+}
+`
+
+const TICKS = 3
+
+export function VoiceInputButton(props: VoiceInputButtonProps): React.ReactElement {
+  const draft = props.useInput ? props.useInput((s) => s.draft) : ''
+  const [status, setStatus] = React.useState<'idle' | 'recording' | 'transcribing' | 'error'>('idle')
+  const [errorText, setErrorText] = React.useState('')
+  const recRef = React.useRef<Recording | null>(null)
+  const baseDraftRef = React.useRef('')
+  const draftRef = React.useRef('')
+  draftRef.current = draft
+
+  const setDraft = (text: string): void => {
+    if (props.inputActions && typeof props.inputActions.setDraft === 'function') {
+      props.inputActions.setDraft(text)
+    }
+  }
+  const concatSamples = (rec: Recording): Float32Array | null => {
+    let total = 0
+    for (const chunk of rec.chunks) total += chunk.length
+    if (total === 0) return null
+    const samples = new Float32Array(total)
+    let off = 0
+    for (const chunk of rec.chunks) {
+      samples.set(chunk, off)
+      off += chunk.length
+    }
+    return samples
+  }
+
+  const transcribe = async (rec: Recording, final: boolean): Promise<string> => {
+    const raw = concatSamples(rec)
+    if (!raw) return ''
+    if (!props.remote || typeof props.remote.transcribe !== 'function') return ''
+    // Resample to 16 kHz (the model's expected rate)
+    const samples = resampleTo16k(raw, rec.sampleRate || 16000)
+    if (isSilent(samples)) return ''
+    const b64 = float32ToBase64(samples)
+    const answered = await props.remote.transcribe({ b64, final })
+    return (answered.ok && typeof answered.value.text === 'string') ? answered.value.text : ''
+  }
+
+  const teardownAudio = (rec: Recording): void => {
+    if (rec.processor) { rec.processor.onaudioprocess = null; try { rec.processor.disconnect() } catch { /* noop */ } }
+    if (rec.sourceNode) { try { rec.sourceNode.disconnect() } catch { /* noop */ } }
+    if (rec.stream) { try { rec.stream.getTracks().forEach((t) => t.stop()) } catch { /* noop */ } }
+    if (rec.audioCtx) { try { void rec.audioCtx.close() } catch { /* noop */ } }
+  }
+
+  React.useEffect(() => () => {
+    const rec = recRef.current
+    if (rec) { rec.stopping = true; teardownAudio(rec) }
+  }, [])
+
+  const start = async (): Promise<void> => {
+    const g: any = (typeof globalThis !== 'undefined') ? globalThis : window
+    if (!g || !g.navigator || !g.navigator.mediaDevices || !g.navigator.mediaDevices.getUserMedia) {
+      setErrorText('当前环境不支持麦克风录音')
+      setStatus('error')
+      return
+    }
+    try {
+      const stream: MediaStream = await g.navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      })
+      const AC = g.AudioContext || g.webkitAudioContext
+      if (!AC) {
+        stream.getTracks().forEach((t) => t.stop())
+        setErrorText('当前浏览器不支持音频采集')
+        setStatus('error')
+        return
+      }
+      const audioCtx: AudioContext = new AC({ sampleRate: 16000 })
+      // Resume context (Chromium starts suspended until a user gesture resumes it)
+      if (typeof audioCtx.resume === 'function') { try { await audioCtx.resume() } catch { /* noop */ } }
+      const sourceNode = audioCtx.createMediaStreamSource(stream)
+      const processor = audioCtx.createScriptProcessor(4096, 1, 1)
+      const rec: Recording = {
+        stream, audioCtx, sourceNode, processor, chunks: [],
+        sampleRate: audioCtx.sampleRate, tick: 0, transcribing: false, stopping: false, inFlight: null,
+      }
+      recRef.current = rec
+
+      processor.onaudioprocess = (e) => {
+        const input = e.inputBuffer.getChannelData(0)
+        rec.chunks.push(new Float32Array(input))
+        rec.tick++
+        if (rec.tick >= TICKS && !rec.transcribing && !rec.stopping) {
+          rec.tick = 0
+          rec.transcribing = true
+          rec.inFlight = transcribe(rec, false).then((text) => {
+            if (text && !rec.stopping) setDraft(joinText(baseDraftRef.current, text))
+          }).catch(() => { /* keep the last draft */ }).finally(() => {
+            rec.transcribing = false
+          })
+        }
+      }
+
+      const gain = audioCtx.createGain()
+      gain.gain.value = 0
+      sourceNode.connect(processor)
+      processor.connect(gain)
+      gain.connect(audioCtx.destination)
+
+      baseDraftRef.current = draftRef.current
+      setErrorText('')
+      setStatus('recording')
+    } catch (e: any) {
+      const name = (e && e.name) || ''
+      if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+        setErrorText('麦克风权限被拒绝，请允许麦克风后重试')
+      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+        setErrorText('找不到可用的麦克风设备')
+      } else {
+        setErrorText('无法启动录音: ' + ((e && e.message) || String(e)))
+      }
+      setStatus('error')
+    }
+  }
+
+  const stop = async (): Promise<void> => {
+    const rec = recRef.current
+    if (!rec) return
+    recRef.current = null
+    rec.stopping = true
+    teardownAudio(rec)
+    setStatus('transcribing')
+    setErrorText('')
+    try {
+      if (rec.inFlight) { try { await rec.inFlight } catch { /* noop */ } }
+      // Quick silence check before sending to host
+      const raw = concatSamples(rec)
+      if (!raw || isSilent(resampleTo16k(raw, rec.sampleRate || 16000))) {
+        setStatus('error')
+        setErrorText('麦克风没有收到声音，请检查麦克风是否正常')
+        return
+      }
+      const text = await transcribe(rec, true)
+      if (text) {
+        setDraft(joinText(baseDraftRef.current, text))
+        setStatus('idle')
+        setErrorText('')
+      } else {
+        setStatus('error')
+        setErrorText('没有识别到文字，请重试')
+      }
+    } catch (e: any) {
+      setStatus('error')
+      setErrorText('转写失败: ' + ((e && e.message) || String(e)))
+    }
+  }
+
+  const toggle = (): void => {
+    if (status === 'recording') { void stop() }
+    else if (status !== 'transcribing') { void start() }
+  }
+
+  const listening = status === 'recording'
+  const busy = status === 'transcribing'
+  const title = listening ? '正在录音… 点击停止' : (busy ? '正在转写…' : (errorText || '语音输入'))
+
+  return React.createElement(React.Fragment, null,
+    React.createElement('style', null, VOICE_CSS),
+    React.createElement('span', { className: 'dsh-voice-wrap' },
+      React.createElement('button', {
+        className: 'dsh-voice-btn' + (listening ? ' is-listening' : '') + (busy ? ' is-busy' : '') + (status === 'error' ? ' is-error' : ''),
+        type: 'button',
+        onClick: toggle,
+        disabled: busy,
+        title,
+        'aria-label': listening ? '停止语音输入' : '开始语音输入',
+        'aria-pressed': listening ? 'true' : 'false',
+      }, React.createElement(MicIcon)),
+      errorText ? React.createElement('span', { className: 'dsh-voice-error' }, errorText) : null,
+    ),
+  )
+}

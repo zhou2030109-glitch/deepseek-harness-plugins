@@ -1,0 +1,299 @@
+/**
+ * Voice input button: records 16 kHz mono PCM through getUserMedia, encodes to
+ * WAV base64, streams re-transcriptions of the growing buffer to the composer
+ * draft, and punctuates on stop via the voiceInput Remote.
+ */
+import React from 'react';
+function joinText(base, text) {
+    const t = (text || '').trim();
+    if (!t)
+        return base || '';
+    if (!base)
+        return t;
+    return base + ' ' + t;
+}
+function MicIcon() {
+    return React.createElement('svg', {
+        viewBox: '0 0 24 24',
+        width: 16,
+        height: 16,
+        fill: 'none',
+        stroke: 'currentColor',
+        strokeWidth: 2,
+        strokeLinecap: 'round',
+        strokeLinejoin: 'round',
+    }, React.createElement('rect', { x: 9, y: 2, width: 6, height: 12, rx: 3 }), React.createElement('path', { d: 'M5 10v1a7 7 0 0 0 14 0v-1' }), React.createElement('line', { x1: 12, y1: 18, x2: 12, y2: 22 }));
+}
+function encodeWav(samples, sampleRate) {
+    const n = samples.length;
+    const buffer = new ArrayBuffer(44 + n * 2);
+    const view = new DataView(buffer);
+    const writeStr = (off, str) => {
+        for (let i = 0; i < str.length; i++)
+            view.setUint8(off + i, str.charCodeAt(i));
+    };
+    writeStr(0, 'RIFF');
+    view.setUint32(4, 36 + n * 2, true);
+    writeStr(8, 'WAVE');
+    writeStr(12, 'fmt ');
+    view.setUint32(16, 16, true);
+    view.setUint16(20, 1, true);
+    view.setUint16(22, 1, true);
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true);
+    view.setUint16(32, 2, true);
+    view.setUint16(34, 16, true);
+    writeStr(36, 'data');
+    view.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) {
+        let s = samples[i];
+        if (s > 1)
+            s = 1;
+        if (s < -1)
+            s = -1;
+        view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return buffer;
+}
+function toBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    const chunk = 0x8000;
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += chunk) {
+        binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
+    }
+    const g = (typeof globalThis !== 'undefined') ? globalThis : window;
+    const b64 = (typeof btoa === 'function')
+        ? btoa
+        : (g && typeof g.btoa === 'function' ? g.btoa : undefined);
+    if (b64)
+        return b64(binary);
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let out = '';
+    for (let i = 0; i < bytes.length; i += 3) {
+        const b1 = bytes[i];
+        const b2 = (i + 1 < bytes.length) ? bytes[i + 1] : 0;
+        const b3 = (i + 2 < bytes.length) ? bytes[i + 2] : 0;
+        out += chars[b1 >> 2];
+        out += chars[((b1 & 3) << 4) | (b2 >> 4)];
+        out += (i + 1 < bytes.length) ? chars[((b2 & 15) << 2) | (b3 >> 6)] : '=';
+        out += (i + 2 < bytes.length) ? chars[b3 & 63] : '=';
+    }
+    return out;
+}
+const VOICE_CSS = `
+.dsh-voice-wrap { display: inline-flex; align-items: center; gap: 6px; }
+.dsh-voice-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; margin: 0; padding: 0;
+  border: none; border-radius: 999px; background: transparent;
+  color: currentColor; opacity: 0.85; cursor: pointer; flex-shrink: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+}
+.dsh-voice-btn:hover { opacity: 1; background-color: rgba(128, 128, 128, 0.14); }
+.dsh-voice-btn:disabled { cursor: default; }
+.dsh-voice-btn.is-listening {
+  color: #ef4444; opacity: 1; background-color: rgba(239, 68, 68, 0.14);
+  animation: dsh-voice-pulse 1.4s ease-in-out infinite;
+}
+.dsh-voice-btn.is-busy { color: #f59e0b; opacity: 1; animation: dsh-voice-busy 1s ease-in-out infinite; }
+.dsh-voice-btn.is-error { color: #ef4444; opacity: 1; }
+@keyframes dsh-voice-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.45); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+@keyframes dsh-voice-busy { 0%, 100% { opacity: 0.5; } 50% { opacity: 1; } }
+.dsh-voice-error {
+  font-size: 11px; line-height: 1.2; color: #ef4444; white-space: nowrap;
+  max-width: 220px; overflow: hidden; text-overflow: ellipsis;
+}
+`;
+const TICKS = 6;
+export function VoiceInputButton(props) {
+    const draft = props.useInput((s) => s.draft);
+    const [status, setStatus] = React.useState('idle');
+    const [errorText, setErrorText] = React.useState('');
+    const recRef = React.useRef(null);
+    const baseDraftRef = React.useRef('');
+    const draftRef = React.useRef('');
+    draftRef.current = draft;
+    const setDraft = (text) => {
+        if (props.inputActions && typeof props.inputActions.setDraft === 'function') {
+            props.inputActions.setDraft(text);
+        }
+    };
+    const concatSamples = (rec) => {
+        let total = 0;
+        for (const chunk of rec.chunks)
+            total += chunk.length;
+        if (total === 0)
+            return null;
+        const samples = new Float32Array(total);
+        let off = 0;
+        for (const chunk of rec.chunks) {
+            samples.set(chunk, off);
+            off += chunk.length;
+        }
+        return samples;
+    };
+    const transcribe = async (rec, final) => {
+        const samples = concatSamples(rec);
+        if (!samples)
+            return '';
+        const wav = encodeWav(samples, rec.sampleRate || 16000);
+        const b64 = toBase64(wav);
+        const answered = await props.remote.transcribe({ b64, final });
+        return (answered.ok && typeof answered.value.text === 'string') ? answered.value.text : '';
+    };
+    const teardownAudio = (rec) => {
+        if (rec.processor) {
+            rec.processor.onaudioprocess = null;
+            try {
+                rec.processor.disconnect();
+            }
+            catch { /* noop */ }
+        }
+        if (rec.sourceNode) {
+            try {
+                rec.sourceNode.disconnect();
+            }
+            catch { /* noop */ }
+        }
+        if (rec.stream) {
+            try {
+                rec.stream.getTracks().forEach((t) => t.stop());
+            }
+            catch { /* noop */ }
+        }
+        if (rec.audioCtx) {
+            try {
+                void rec.audioCtx.close();
+            }
+            catch { /* noop */ }
+        }
+    };
+    React.useEffect(() => () => {
+        const rec = recRef.current;
+        if (rec) {
+            rec.stopping = true;
+            teardownAudio(rec);
+        }
+    }, []);
+    const start = async () => {
+        const g = (typeof globalThis !== 'undefined') ? globalThis : window;
+        if (!g || !g.navigator || !g.navigator.mediaDevices || !g.navigator.mediaDevices.getUserMedia) {
+            setErrorText('当前环境不支持麦克风录音');
+            setStatus('error');
+            return;
+        }
+        try {
+            const stream = await g.navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+            });
+            const AC = g.AudioContext || g.webkitAudioContext;
+            if (!AC) {
+                stream.getTracks().forEach((t) => t.stop());
+                setErrorText('当前浏览器不支持音频采集');
+                setStatus('error');
+                return;
+            }
+            const audioCtx = new AC({ sampleRate: 16000 });
+            const sourceNode = audioCtx.createMediaStreamSource(stream);
+            const processor = audioCtx.createScriptProcessor(4096, 1, 1);
+            const rec = {
+                stream, audioCtx, sourceNode, processor, chunks: [],
+                sampleRate: audioCtx.sampleRate, tick: 0, transcribing: false, stopping: false, inFlight: null,
+            };
+            recRef.current = rec;
+            processor.onaudioprocess = (e) => {
+                const input = e.inputBuffer.getChannelData(0);
+                rec.chunks.push(new Float32Array(input));
+                rec.tick++;
+                if (rec.tick >= TICKS && !rec.transcribing && !rec.stopping) {
+                    rec.tick = 0;
+                    rec.transcribing = true;
+                    rec.inFlight = transcribe(rec, false).then((text) => {
+                        if (text && !rec.stopping)
+                            setDraft(joinText(baseDraftRef.current, text));
+                    }).catch(() => { }).finally(() => {
+                        rec.transcribing = false;
+                    });
+                }
+            };
+            const gain = audioCtx.createGain();
+            gain.gain.value = 0;
+            sourceNode.connect(processor);
+            processor.connect(gain);
+            gain.connect(audioCtx.destination);
+            baseDraftRef.current = draftRef.current;
+            setErrorText('');
+            setStatus('recording');
+        }
+        catch (e) {
+            const name = (e && e.name) || '';
+            if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+                setErrorText('麦克风权限被拒绝，请允许麦克风后重试');
+            }
+            else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+                setErrorText('找不到可用的麦克风设备');
+            }
+            else {
+                setErrorText('无法启动录音: ' + ((e && e.message) || String(e)));
+            }
+            setStatus('error');
+        }
+    };
+    const stop = async () => {
+        const rec = recRef.current;
+        if (!rec)
+            return;
+        recRef.current = null;
+        rec.stopping = true;
+        teardownAudio(rec);
+        setStatus('transcribing');
+        setErrorText('');
+        try {
+            if (rec.inFlight) {
+                try {
+                    await rec.inFlight;
+                }
+                catch { /* noop */ }
+            }
+            const text = await transcribe(rec, true);
+            if (text) {
+                setDraft(joinText(baseDraftRef.current, text));
+                setStatus('idle');
+                setErrorText('');
+            }
+            else {
+                setStatus('error');
+                setErrorText('没有识别到文字，请重试');
+            }
+        }
+        catch (e) {
+            setStatus('error');
+            setErrorText('转写失败: ' + ((e && e.message) || String(e)));
+        }
+    };
+    const toggle = () => {
+        if (status === 'recording') {
+            void stop();
+        }
+        else if (status !== 'transcribing') {
+            void start();
+        }
+    };
+    const listening = status === 'recording';
+    const busy = status === 'transcribing';
+    const title = listening ? '正在录音… 点击停止' : (busy ? '正在转写…' : (errorText || '语音输入'));
+    return React.createElement(React.Fragment, null, React.createElement('style', null, VOICE_CSS), React.createElement('span', { className: 'dsh-voice-wrap' }, React.createElement('button', {
+        className: 'dsh-voice-btn' + (listening ? ' is-listening' : '') + (busy ? ' is-busy' : '') + (status === 'error' ? ' is-error' : ''),
+        type: 'button',
+        onClick: toggle,
+        disabled: busy,
+        title,
+        'aria-label': listening ? '停止语音输入' : '开始语音输入',
+        'aria-pressed': listening ? 'true' : 'false',
+    }, React.createElement(MicIcon)), errorText ? React.createElement('span', { className: 'dsh-voice-error' }, errorText) : null));
+}
+//# sourceMappingURL=VoiceInputButton.js.map
