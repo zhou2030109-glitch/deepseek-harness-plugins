@@ -1,5 +1,8 @@
 # Input Image Optimization — 输入图片优化
 
+> [!IMPORTANT]
+> 这个旧补丁只能减少浏览器编码耗时，不能修复“图片发送后要等一会儿才显示”的完整问题。请改用 [immediate-image-submit-preview](../immediate-image-submit-preview/)；新补丁已包含这里的 `FileReader` 优化，不要同时应用两者。
+
 用浏览器原生 `FileReader.readAsDataURL()` 替代 JavaScript 手动 base64 编码，大幅提升大图片上传速度。
 
 ## 背景

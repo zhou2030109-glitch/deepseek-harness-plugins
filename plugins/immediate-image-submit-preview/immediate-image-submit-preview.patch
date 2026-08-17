@@ -1,0 +1,575 @@
+diff --git a/packages/client/ui-conversation/src/client/apply.ts b/packages/client/ui-conversation/src/client/apply.ts
+index f57caea..2ec8960 100644
+--- a/packages/client/ui-conversation/src/client/apply.ts
++++ b/packages/client/ui-conversation/src/client/apply.ts
+@@ -387,6 +387,7 @@ export function apply(ctx: Context): void {
+       const conversation = concreteConversation(ctx)
+       const scoped = scopedConversation(sessions, sessionId)
+       return {
++        pendingSubmissions: conversation.pendingSubmissionsFor(sessionId),
+         openDetails: (target) => {
+           actions.select(target)
+           layout.openDetails()
+diff --git a/packages/client/ui-conversation/src/client/chat/ChatView.tsx b/packages/client/ui-conversation/src/client/chat/ChatView.tsx
+index 58e63b3..b64e39e 100644
+--- a/packages/client/ui-conversation/src/client/chat/ChatView.tsx
++++ b/packages/client/ui-conversation/src/client/chat/ChatView.tsx
+@@ -12,11 +12,11 @@
+ // ChatNodeSeat subscribes to one Node key, so Assistant deltas and Tool
+ // lifecycle updates replace only their own row without remounting it.
+ 
+-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
++import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+ import type { ConversationTimelineSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
+ import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
+ import type { ChatViewSlotProps } from '../contract/slots.ts'
+-import { PendingSteeringBubble } from './MessageItem.tsx'
++import { PendingImageSubmissionBubble, PendingSteeringBubble } from './MessageItem.tsx'
+ import { ChatNodeSeat } from './ChatNodeSeat.tsx'
+ import { formatRunDuration } from './message-chrome.ts'
+ import css from './ChatView.module.css'
+@@ -145,7 +145,7 @@ function TurnStatus({ startTime, t }: {
+  */
+ export function ChatView({
+   useSession, useSessions, useStore, renderSlot, sessionId, openFile, loadOlder, loadImage, inspectCall, chatScroll, forkAt,
+-  fileMentions, t,
++  fileMentions, pendingSubmissions, t,
+ }: ChatViewSlotProps) {
+   const order = useSession(s => s.chat.order)
+   const nodeStore = useSession(s => s.chat.nodes)
+@@ -159,6 +159,10 @@ export function ChatView({
+   const hasMore = useSession(s => s.hasMore)
+   const loadingOlder = useSession(s => s.loadingOlder)
+   const selectedCallId = useStore(s => s.selection?.callId)
++  const pendingImages = useSyncExternalStore(
++    onStoreChange => pendingSubmissions.subscribe(onStoreChange),
++    () => pendingSubmissions.getSnapshot(),
++  )
+ 
+   const pendingSteering = useMemo(
+     () => inbox.filter(item => item.placement === 'steering'),
+@@ -179,6 +183,7 @@ export function ChatView({
+   const openedRef = useRef(false)
+   const lastKeyRef = useRef<string | null>(null)
+   const lastSteeringIdRef = useRef<string | null>(null)
++  const lastPendingImageIdRef = useRef<string | null>(null)
+   /** Flow tip signature — follow-scroll only when this moves, never on a
+    *  scroll-driven at-bottom chrome re-render (which would snap inertial
+    *  scrolls the rest of the way to the floor). */
+@@ -189,7 +194,8 @@ export function ChatView({
+   const lastKey = order.at(-1) ?? null
+   const lastNode = lastKey === null ? undefined : nodeStore.get(lastKey)
+   const lastSteeringId = pendingSteering[pendingSteering.length - 1]?.id ?? null
+-  const followSig = `${openState}:${firstSeq}:${lastKey}:${order.length}:${running ? 1 : 0}:${lastSteeringId ?? ''}`
++  const lastPendingImageId = pendingImages.at(-1)?.id ?? null
++  const followSig = `${openState}:${firstSeq}:${lastKey}:${order.length}:${running ? 1 : 0}:${lastSteeringId ?? ''}:${lastPendingImageId ?? ''}`
+ 
+   const toBottom = (el: HTMLElement): void => {
+     anchorRef.current = null
+@@ -228,6 +234,7 @@ export function ChatView({
+       firstSeqRef.current = firstSeq
+       lastKeyRef.current = lastKey
+       lastSteeringIdRef.current = lastSteeringId
++      lastPendingImageIdRef.current = lastPendingImageId
+       followSigRef.current = followSig
+       return
+     }
+@@ -244,6 +251,7 @@ export function ChatView({
+       /* v8 ignore next -- ?? arm: a prepend adds nodes, so the flow list here is never empty. */
+       lastKeyRef.current = lastKey
+       lastSteeringIdRef.current = lastSteeringId
++      lastPendingImageIdRef.current = lastPendingImageId
+       followSigRef.current = followSig
+       return
+     }
+@@ -252,13 +260,15 @@ export function ChatView({
+     // (send lives in the composer, so arrival is detected here, not armed there).
+     const appendedUser = lastKey !== lastKeyRef.current && lastNode?.kind === 'user'
+     const appendedSteering = lastSteeringId !== null && lastSteeringId !== lastSteeringIdRef.current
++    const appendedPendingImage = lastPendingImageId !== null && lastPendingImageId !== lastPendingImageIdRef.current
+     const tipMoved = followSigRef.current !== followSig
+     lastKeyRef.current = lastKey
+     lastSteeringIdRef.current = lastSteeringId
++    lastPendingImageIdRef.current = lastPendingImageId
+     followSigRef.current = followSig
+     // Follow new flow content while pinned; do NOT re-pin on every render
+     // merely because atBottomRef is true (scroll threshold → setState → snap).
+-    if (appendedUser || appendedSteering || (tipMoved && atBottomRef.current)) toBottom(el)
++    if (appendedUser || appendedSteering || appendedPendingImage || (tipMoved && atBottomRef.current)) toBottom(el)
+   })
+ 
+   const onScrollRef = useRef(() => {})
+@@ -395,6 +405,9 @@ export function ChatView({
+               t={t}
+             />
+           ))}
++          {pendingImages.map(submission => (
++            <PendingImageSubmissionBubble key={submission.id} submission={submission} t={t} />
++          ))}
+           {/* No pending placeholders: questions (ui-user-questions) and approvals
+               (ApprovalPanel) both take over the composer, so a flow card would
+               double-render the same wait. */}
+diff --git a/packages/client/ui-conversation/src/client/chat/MessageItem.module.css b/packages/client/ui-conversation/src/client/chat/MessageItem.module.css
+index 36824d2..c66c3d2 100644
+--- a/packages/client/ui-conversation/src/client/chat/MessageItem.module.css
++++ b/packages/client/ui-conversation/src/client/chat/MessageItem.module.css
+@@ -28,6 +28,34 @@
+   color: var(--dsw-alias-label-primary);
+ }
+ 
++.pendingGallery {
++  display: flex;
++  flex-wrap: wrap;
++  justify-content: flex-end;
++  gap: 10px;
++  max-width: 100%;
++}
++
++.pendingImage,
++.pendingTile {
++  display: block;
++  object-fit: cover;
++  border: 1px solid var(--dsw-alias-border-l2-darkmode-thin);
++  border-radius: 16px;
++}
++
++.pendingImage {
++  width: auto;
++  max-width: 240px;
++  height: auto;
++  max-height: 240px;
++}
++
++.pendingTile {
++  width: 64px;
++  height: 64px;
++}
++
+ .contextRow {
+   padding: 2px 0;
+ }
+diff --git a/packages/client/ui-conversation/src/client/chat/MessageItem.tsx b/packages/client/ui-conversation/src/client/chat/MessageItem.tsx
+index 00b5110..0c9cb6f 100644
+--- a/packages/client/ui-conversation/src/client/chat/MessageItem.tsx
++++ b/packages/client/ui-conversation/src/client/chat/MessageItem.tsx
+@@ -9,7 +9,7 @@ import type {
+   ModelRetryNode, TurnErrorNode, UserMessageNode,
+ } from '@deepseek-ai/dsh-client-runtime/client'
+ import { JsonBlock, MessageText, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
+-import type { ChatNodeViewProps, ChatViewSlotProps } from '../contract/slots.ts'
++import type { ChatNodeViewProps, ChatViewSlotProps, PendingImageSubmission } from '../contract/slots.ts'
+ import { ImageGallery, type ImageLoader } from '@deepseek-ai/dsh-client-ui-attachment'
+ import { messageImageLabels } from '../image-labels.ts'
+ import { CompactionItem } from './CompactionItem.tsx'
+@@ -234,6 +234,37 @@ export function PendingSteeringBubble({ content, loadImage, t }: {
+   )
+ }
+ 
++/** Browser-preview user bubble shown during image serialization and Host admission. */
++export function PendingImageSubmissionBubble({ submission, t }: {
++  submission: PendingImageSubmission
++  t: ChatViewSlotProps['t']
++}): ReactNode {
++  const multiple = submission.images.length > 1
++  return (
++    <div className={css.userRow} data-pending-submission data-time-hover-root>
++      <div className={css.userStack}>
++        <div className={css.pendingGallery}>
++          {submission.images.map(image => (
++            <img
++              key={image.id}
++              className={multiple ? css.pendingTile : css.pendingImage}
++              src={image.previewUrl}
++              alt={image.name || t('image.pending')}
++            />
++          ))}
++        </div>
++        {submission.text !== '' && <div className={css.bubble}>{projectUserText(submission.text)}</div>}
++      </div>
++      <MessageIconActions
++        text={submission.text}
++        clock="start"
++        className={css.actions}
++        t={t}
++      />
++    </div>
++  )
++}
++
+ /** User and admitted-steering keyed Chat renderer. */
+ export const UserMessageNodeView = memo(function UserMessageNodeView({
+   node, loadImage, t,
+diff --git a/packages/client/ui-conversation/src/client/contract/slots.ts b/packages/client/ui-conversation/src/client/contract/slots.ts
+index 2125914..568fc5c 100644
+--- a/packages/client/ui-conversation/src/client/contract/slots.ts
++++ b/packages/client/ui-conversation/src/client/contract/slots.ts
+@@ -30,6 +30,20 @@ export interface ComposerAttachment {
+   previewUrl: string
+ }
+ 
++/** Browser-owned image presented while its durable session event catches up. */
++export interface PendingSubmissionImage {
++  readonly id: DraftAttachmentId
++  readonly name: string
++  readonly previewUrl: string
++}
++
++/** One locally submitted image message not yet visible in the durable timeline. */
++export interface PendingImageSubmission {
++  readonly id: string
++  readonly text: string
++  readonly images: readonly PendingSubmissionImage[]
++}
++
+ declare module '@deepseek-ai/dsh-client-ui-slots' {
+   interface SlotMap {
+     /**
+@@ -673,6 +687,8 @@ export interface ChatScrollPosition {
+  * outside the view (layout orchestration; the session object layer).
+  */
+ export interface ChatViewInjected {
++  /** Browser-only image submissions awaiting their matching durable session event. */
++  pendingSubmissions: ObservableSnapshot<readonly PendingImageSubmission[]>
+   /** Selection write + details panel opening in one gesture (store action + layout orchestration). */
+   openDetails: (target: SelectionTarget) => void
+   /**
+diff --git a/packages/client/ui-conversation/src/client/service.ts b/packages/client/ui-conversation/src/client/service.ts
+index 198eee5..0942a9f 100644
+--- a/packages/client/ui-conversation/src/client/service.ts
++++ b/packages/client/ui-conversation/src/client/service.ts
+@@ -12,9 +12,12 @@ import type { Context } from '@deepseek-ai/cordis'
+ // Type-only imports: a plugin-to-plugin value import is a bundle purity
+ // error, so scope resolution goes through the sessions service (scopeOf
+ // method) instead of the standalone helper.
+-import type { ISessions, SessionFace, SessionId } from '@deepseek-ai/dsh-client-runtime/client'
++import { createSnapshotStore } from '@deepseek-ai/dsh-client-runtime/client'
++import type {
++  ConversationSnapshot, ISessions, SessionFace, SessionId, SnapshotStore,
++} from '@deepseek-ai/dsh-client-runtime/client'
+ import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+-import type { ComposerAttachment } from './contract/slots.ts'
++import type { ComposerAttachment, PendingImageSubmission } from './contract/slots.ts'
+ import type { QueueAction, QueueItemId } from './contract/queue.ts'
+ import type { ComposerBlocks } from './input/blocks.ts'
+ import type { DraftAttachmentId, SessionInputResolver } from './input/contract.ts'
+@@ -54,7 +57,7 @@ export interface IConversation {
+   /**
+    * Pull one older history page for the scoped session.
+    * @returns completion of the page pull.
+-   */
++  */
+   loadOlder(): Promise<void>
+ }
+ 
+@@ -74,6 +77,13 @@ interface ImageUrlEntry {
+   readonly pending: Promise<string>
+ }
+ 
++interface PendingSubmissionTracking {
++  readonly session: SessionFace
++  readonly afterSeq: number
++  expectedAttachmentIds: readonly string[] | null
++  readonly unsubscribe: () => void
++}
++
+ /** Unsupported browser-declared image type, localized by the UI boundary. */
+ export class UnsupportedImageMediaTypeError extends Error {
+   /** Browser-declared MIME value, possibly empty. */
+@@ -97,6 +107,8 @@ export class ConversationController extends Service implements IConversation {
+   private readonly imageUrls = new Map<string, ImageUrlEntry>()
+   private readonly imageGenerations = new Map<SessionId, number>()
+   private readonly createdImageUrls = new Set<string>()
++  private readonly pendingSubmissionStores = new Map<SessionId, SnapshotStore<readonly PendingImageSubmission[]>>()
++  private readonly pendingSubmissionTracking = new Map<string, PendingSubmissionTracking>()
+   private disposed = false
+ 
+   /**
+@@ -117,6 +129,10 @@ export class ConversationController extends Service implements IConversation {
+       this.draftAttachments.clear()
+       this.imageUrls.clear()
+       this.imageGenerations.clear()
++      for (const tracking of this.pendingSubmissionTracking.values()) tracking.unsubscribe()
++      this.pendingSubmissionTracking.clear()
++      for (const store of this.pendingSubmissionStores.values()) store.set([])
++      this.pendingSubmissionStores.clear()
+     }, 'conversation attachment URL cache')
+   }
+ 
+@@ -149,11 +165,112 @@ export class ConversationController extends Service implements IConversation {
+     if (attachments.length !== imageIds.length) {
+       throw new Error('conversation.sendSession: one or more draft images are no longer available')
+     }
+-    const uploaded = await this.serializeImages(attachments.map(attachment => attachment.file))
+-    const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
+-    const result = await session.prompt(content, mode)
+-    if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
+-    this.releaseDraftImages(attachments)
++    const pending = attachments.length === 0 ? undefined : this.beginPendingSubmission(session, text, attachments)
++    let admitted = false
++    try {
++      // Serialize and content-hash in parallel, before the prompt.
++      const [uploaded, digests] = await Promise.all([
++        this.serializeImages(attachments.map(attachment => attachment.file)),
++        Promise.all(attachments.map(attachment => fileSha256(attachment.file))),
++      ])
++      if (pending !== undefined) this.setPendingSubmissionDigests(pending.id, digests)
++      // Pre-cache the just-sent preview URLs before prompting, so the durable
++      // message can reuse browser-held bytes regardless of whether its event
++      // projection arrives before or after the unary response. Drafts stay
++      // registered, so a failed prompt leaves them restorable.
++      this.cacheSentImages(session.sessionId, attachments, digests)
++      const content = [...uploaded, ...(text === '' ? [] : [{ type: 'text' as const, text }])]
++      const result = await session.prompt(content, mode)
++      if (!result.ok) {
++        // Drop the pre-cached entries; the drafts remain registered for restore.
++        this.dropSentImages(session.sessionId, digests)
++        throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
++      }
++      // Ownership transfer: move hashed drafts out of the registry so release
++      // revokes only the un-cached preview URLs.
++      this.finalizeSentImages(attachments, digests)
++      this.releaseDraftImages(attachments)
++      admitted = true
++    } finally {
++      // A successful unary response only proves Host admission. The matching
++      // durable event can reach the Session snapshot later, so retain the
++      // browser preview until that event is observable. Failed admission or
++      // serialization has no durable handoff and retires it here.
++      if (pending !== undefined && !admitted) this.endPendingSubmission(session.sessionId, pending.id)
++    }
++  }
++
++  /**
++   * Return the stable browser-only submission source for one session.
++   * @param sessionId - owning session.
++   * @returns observable submissions awaiting Host admission.
++   */
++  pendingSubmissionsFor(sessionId: SessionId): SnapshotStore<readonly PendingImageSubmission[]> {
++    const existing = this.pendingSubmissionStores.get(sessionId)
++    if (existing !== undefined) return existing
++    const created = createSnapshotStore<readonly PendingImageSubmission[]>([])
++    this.pendingSubmissionStores.set(sessionId, created)
++    return created
++  }
++
++  private beginPendingSubmission(
++    session: SessionFace,
++    text: string,
++    attachments: readonly ComposerAttachment[],
++  ): PendingImageSubmission {
++    const submission: PendingImageSubmission = {
++      id: crypto.randomUUID(),
++      text,
++      images: attachments.map(attachment => ({
++        id: attachment.id,
++        name: attachment.file.name,
++        previewUrl: attachment.previewUrl,
++      })),
++    }
++    const store = this.pendingSubmissionsFor(session.sessionId)
++    store.set([...store.getSnapshot(), submission])
++    const afterSeq = latestSubmittedImageSeq(session.getSnapshot().nodes)
++    const unsubscribe = session.subscribe(() => { this.reconcilePendingSubmissions(session) })
++    this.pendingSubmissionTracking.set(submission.id, {
++      session,
++      afterSeq,
++      expectedAttachmentIds: null,
++      unsubscribe,
++    })
++    return submission
++  }
++
++  private setPendingSubmissionDigests(id: string, digests: readonly (string | null)[]): void {
++    const tracking = this.pendingSubmissionTracking.get(id)
++    if (tracking === undefined) return
++    tracking.expectedAttachmentIds = digests.every(digest => digest !== null)
++      ? digests.map(digest => `sha256:${digest}`)
++      : null
++    this.reconcilePendingSubmissions(tracking.session)
++  }
++
++  private reconcilePendingSubmissions(session: SessionFace): void {
++    const store = this.pendingSubmissionStores.get(session.sessionId)
++    if (store === undefined) return
++    const nodes = session.getSnapshot().nodes
++    for (const submission of store.getSnapshot()) {
++      const tracking = this.pendingSubmissionTracking.get(submission.id)
++      if (tracking === undefined || tracking.session !== session) continue
++      if (nodes.some(node => matchesPendingSubmission(node, submission, tracking))) {
++        this.endPendingSubmission(session.sessionId, submission.id)
++      }
++    }
++  }
++
++  private endPendingSubmission(sessionId: SessionId, id: string): void {
++    const tracking = this.pendingSubmissionTracking.get(id)
++    if (tracking !== undefined) {
++      tracking.unsubscribe()
++      this.pendingSubmissionTracking.delete(id)
++    }
++    const store = this.pendingSubmissionStores.get(sessionId)
++    if (store === undefined) return
++    store.set(store.getSnapshot().filter(submission => submission.id !== id))
+   }
+ 
+   /**
+@@ -205,6 +322,67 @@ export class ConversationController extends Service implements IConversation {
+     for (const attachment of attachments) this.releaseDraftImage(attachment.id)
+   }
+ 
++  /**
++   * Cache just-sent preview URLs by content hash so the message thumbnail
++   * reuses bytes the browser already holds instead of re-fetching them through
++   * readAttachment. Only ADDS cache entries; the drafts stay registered so a
++   * failed prompt can still restore them. `finalizeSentImages` later moves the
++   * hashed drafts out of the registry so their URLs survive release.
++   * @param sessionId - owning session.
++   * @param attachments - just-sent draft attachments.
++   * @param digests - content hashes computed before the prompt, aligned with `attachments`.
++   */
++  private cacheSentImages(
++    sessionId: SessionId,
++    attachments: readonly ComposerAttachment[],
++    digests: readonly (string | null)[],
++  ): void {
++    const generation = this.imageGenerations.get(sessionId) ?? 0
++    for (let index = 0; index < attachments.length; index++) {
++      const digest = digests[index]
++      if (digest === null || digest === undefined) continue
++      const attachment = attachments[index]
++      if (attachment === undefined) continue
++      this.imageUrls.set(`${sessionId}:sha256:${digest}`, {
++        sessionId,
++        generation,
++        pending: Promise.resolve(attachment.previewUrl),
++      })
++    }
++  }
++
++  /**
++   * Drop the pre-cached entries after a failed send; the drafts are untouched.
++   * @param sessionId - owning session.
++   * @param digests - content hashes previously cached by `cacheSentImages`.
++   */
++  private dropSentImages(sessionId: SessionId, digests: readonly (string | null)[]): void {
++    for (const digest of digests) {
++      if (digest === null) continue
++      this.imageUrls.delete(`${sessionId}:sha256:${digest}`)
++    }
++  }
++
++  /**
++   * After a successful prompt, transfer hashed drafts out of the draft registry
++   * so `releaseDraftImages` revokes only the un-cached preview URLs; the hashed
++   * URLs stay alive under the image cache until the session releases its images.
++   * @param attachments - just-sent draft attachments.
++   * @param digests - content hashes computed before the prompt, aligned with `attachments`.
++   */
++  private finalizeSentImages(
++    attachments: readonly ComposerAttachment[],
++    digests: readonly (string | null)[],
++  ): void {
++    for (let index = 0; index < attachments.length; index++) {
++      const digest = digests[index]
++      if (digest === null || digest === undefined) continue
++      const attachment = attachments[index]
++      if (attachment === undefined) continue
++      this.draftAttachments.delete(attachment.id)
++    }
++  }
++
+   /**
+    * Resolve and cache one session-authorized historical image URL.
+    * @param sessionId - owning session authorization scope.
+@@ -317,12 +495,40 @@ export class ConversationController extends Service implements IConversation {
+     return Promise.all(images.map(async file => ({
+       type: 'image' as const,
+       mediaType: imageMediaType(file.type),
+-      data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
++      data: await readAsBase64(file),
+       ...(file.name === '' ? {} : { name: file.name }),
+     })))
+   }
+ }
+ 
++function latestSubmittedImageSeq(nodes: ConversationSnapshot['nodes']): number {
++  let latest = 0
++  for (const node of nodes) {
++    if ((node.kind === 'user' || node.kind === 'steering') && node.seq > latest) latest = node.seq
++  }
++  return latest
++}
++
++function matchesPendingSubmission(
++  node: ConversationSnapshot['nodes'][number],
++  submission: PendingImageSubmission,
++  tracking: PendingSubmissionTracking,
++): boolean {
++  if ((node.kind !== 'user' && node.kind !== 'steering') || node.seq <= tracking.afterSeq) return false
++  const text = node.content
++    .filter(block => block.type === 'text')
++    .map(block => block.text)
++    .join('')
++  if (text !== submission.text) return false
++  const images = node.content.filter(block => block.type === 'image')
++  if (images.length !== submission.images.length) return false
++  const expectedAttachmentIds = tracking.expectedAttachmentIds
++  if (expectedAttachmentIds === null) return true
++  return images.every((block, index) => (
++    String(block.attachment.attachmentId) === expectedAttachmentIds[index]
++  ))
++}
++
+ function imageMediaType(value: string): ImageMediaType {
+   switch (value) {
+     case 'image/png':
+@@ -344,6 +550,49 @@ function bytesToBase64(data: Uint8Array): string {
+   return btoa(binary)
+ }
+ 
++/**
++ * Read one image file into base64 with the browser's native FileReader encoder.
++ * The `String.fromCharCode(...chunk)` + `btoa` loop above blocks the main
++ * thread for a large file; `readAsDataURL` encodes natively (off the JS main
++ * thread) and returns a `data:` URL whose base64 payload we strip. The payload
++ * is byte-for-byte the file's content, so it is identical to what
++ * `bytesToBase64(await file.arrayBuffer())` produced.
++ */
++function readAsBase64(file: File): Promise<string> {
++  return new Promise((resolve, reject) => {
++    const reader = new FileReader()
++    reader.onload = () => {
++      const result = reader.result
++      if (typeof result !== 'string') {
++        reject(new Error('readAsBase64: FileReader did not produce a data URL'))
++        return
++      }
++      const comma = result.indexOf(',')
++      resolve(comma === -1 ? '' : result.slice(comma + 1))
++    }
++    reader.onerror = () => {
++      reject(reader.error ?? new Error('readAsBase64: failed to read image file'))
++    }
++    reader.readAsDataURL(file)
++  })
++}
++
+ function revokePreview(url: string): void {
+   if (url.startsWith('blob:')) URL.revokeObjectURL(url)
+ }
++
++/**
++ * Content hash matching the host's `sha256:<hex>` attachment id, or null when
++ * the WebCrypto digest API is unavailable (the caller then falls back to the
++ * normal readAttachment re-fetch path).
++ */
++async function fileSha256(file: File): Promise<string | null> {
++  const subtle = (globalThis as { crypto?: Crypto }).crypto?.subtle
++  if (subtle === undefined) return null
++  try {
++    const digest = await subtle.digest('SHA-256', await file.arrayBuffer())
++    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
++  } catch {
++    return null
++  }
++}

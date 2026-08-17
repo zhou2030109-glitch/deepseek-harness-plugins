@@ -9,7 +9,8 @@
 | [voice-input](./plugins/voice-input/) | 独立插件包 | 本地离线语音输入：sherpa-onnx SenseVoice 流式转写 + CT-Transformer 标点 |
 | [message-collapse](./plugins/message-collapse/) | 源码补丁 | 消息折叠：将工具调用和推理过程折叠到可展开的"执行过程"组中 |
 | [vision-fallback-display](./plugins/vision-fallback-display/) | 源码补丁 | 视觉模型回退：让聊天流正确显示 vision-fallback 的图片消息 |
-| [input-image-optimization](./plugins/input-image-optimization/) | 源码补丁 | 输入图片优化：用原生 FileReader 替代 JS 手动 base64 编码 |
+| [immediate-image-submit-preview](./plugins/immediate-image-submit-preview/) | 源码补丁 | 图片发送即时显示：用本地临时气泡填补提交到持久消息出现前的空窗 |
+| [input-image-optimization](./plugins/input-image-optimization/) | 源码补丁（旧） | 仅优化图片读取；若要修复发送后延迟显示，请使用上面的完整补丁 |
 
 ## 两种类型
 
@@ -20,7 +21,7 @@
 2. 在 `cordis.patch.yml` 中添加配置行
 3. 重启 DSH
 
-### 源码补丁（如 message-collapse / vision-fallback-display / input-image-optimization）
+### 源码补丁（如 message-collapse / vision-fallback-display / immediate-image-submit-preview）
 
 对 DSH 源码的 `.patch` 文件。安装方式：
 1. 在 DSH 源码树中 `git apply <patch-file>`
