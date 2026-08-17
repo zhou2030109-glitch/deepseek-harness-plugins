@@ -1,25 +1,20 @@
 diff --git a/packages/client/ui-conversation/src/client/apply.ts b/packages/client/ui-conversation/src/client/apply.ts
-index f57caea..2ec8960 100644
+index f57caea..fce5332 100644
 --- a/packages/client/ui-conversation/src/client/apply.ts
 +++ b/packages/client/ui-conversation/src/client/apply.ts
 @@ -387,6 +387,7 @@ export function apply(ctx: Context): void {
        const conversation = concreteConversation(ctx)
        const scoped = scopedConversation(sessions, sessionId)
        return {
-+        pendingSubmissions: conversation.pendingSubmissionsFor(sessionId),
++        hooks: { pendingSubmissions: conversation.pendingSubmissionsFor(sessionId) },
          openDetails: (target) => {
            actions.select(target)
            layout.openDetails()
 diff --git a/packages/client/ui-conversation/src/client/chat/ChatView.tsx b/packages/client/ui-conversation/src/client/chat/ChatView.tsx
-index 58e63b3..b64e39e 100644
+index 58e63b3..42ea8d1 100644
 --- a/packages/client/ui-conversation/src/client/chat/ChatView.tsx
 +++ b/packages/client/ui-conversation/src/client/chat/ChatView.tsx
-@@ -12,11 +12,11 @@
- // ChatNodeSeat subscribes to one Node key, so Assistant deltas and Tool
- // lifecycle updates replace only their own row without remounting it.
- 
--import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+@@ -16,7 +16,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
  import type { ConversationTimelineSnapshot } from '@deepseek-ai/dsh-client-runtime/client'
  import { IconChevronDownOutline14 } from '@deepseek-ai/dsh-client-ui-primitives'
  import type { ChatViewSlotProps } from '../contract/slots.ts'
@@ -33,22 +28,19 @@ index 58e63b3..b64e39e 100644
  export function ChatView({
    useSession, useSessions, useStore, renderSlot, sessionId, openFile, loadOlder, loadImage, inspectCall, chatScroll, forkAt,
 -  fileMentions, t,
-+  fileMentions, pendingSubmissions, t,
++  fileMentions, usePendingSubmissions, t,
  }: ChatViewSlotProps) {
    const order = useSession(s => s.chat.order)
    const nodeStore = useSession(s => s.chat.nodes)
-@@ -159,6 +159,10 @@ export function ChatView({
+@@ -159,6 +159,7 @@ export function ChatView({
    const hasMore = useSession(s => s.hasMore)
    const loadingOlder = useSession(s => s.loadingOlder)
    const selectedCallId = useStore(s => s.selection?.callId)
-+  const pendingImages = useSyncExternalStore(
-+    onStoreChange => pendingSubmissions.subscribe(onStoreChange),
-+    () => pendingSubmissions.getSnapshot(),
-+  )
++  const pendingImages = usePendingSubmissions(submissions => submissions)
  
    const pendingSteering = useMemo(
      () => inbox.filter(item => item.placement === 'steering'),
-@@ -179,6 +183,7 @@ export function ChatView({
+@@ -179,6 +180,7 @@ export function ChatView({
    const openedRef = useRef(false)
    const lastKeyRef = useRef<string | null>(null)
    const lastSteeringIdRef = useRef<string | null>(null)
@@ -56,7 +48,7 @@ index 58e63b3..b64e39e 100644
    /** Flow tip signature — follow-scroll only when this moves, never on a
     *  scroll-driven at-bottom chrome re-render (which would snap inertial
     *  scrolls the rest of the way to the floor). */
-@@ -189,7 +194,8 @@ export function ChatView({
+@@ -189,7 +191,8 @@ export function ChatView({
    const lastKey = order.at(-1) ?? null
    const lastNode = lastKey === null ? undefined : nodeStore.get(lastKey)
    const lastSteeringId = pendingSteering[pendingSteering.length - 1]?.id ?? null
@@ -66,7 +58,7 @@ index 58e63b3..b64e39e 100644
  
    const toBottom = (el: HTMLElement): void => {
      anchorRef.current = null
-@@ -228,6 +234,7 @@ export function ChatView({
+@@ -228,6 +231,7 @@ export function ChatView({
        firstSeqRef.current = firstSeq
        lastKeyRef.current = lastKey
        lastSteeringIdRef.current = lastSteeringId
@@ -74,7 +66,7 @@ index 58e63b3..b64e39e 100644
        followSigRef.current = followSig
        return
      }
-@@ -244,6 +251,7 @@ export function ChatView({
+@@ -244,6 +248,7 @@ export function ChatView({
        /* v8 ignore next -- ?? arm: a prepend adds nodes, so the flow list here is never empty. */
        lastKeyRef.current = lastKey
        lastSteeringIdRef.current = lastSteeringId
@@ -82,7 +74,7 @@ index 58e63b3..b64e39e 100644
        followSigRef.current = followSig
        return
      }
-@@ -252,13 +260,15 @@ export function ChatView({
+@@ -252,13 +257,15 @@ export function ChatView({
      // (send lives in the composer, so arrival is detected here, not armed there).
      const appendedUser = lastKey !== lastKeyRef.current && lastNode?.kind === 'user'
      const appendedSteering = lastSteeringId !== null && lastSteeringId !== lastSteeringIdRef.current
@@ -99,7 +91,7 @@ index 58e63b3..b64e39e 100644
    })
  
    const onScrollRef = useRef(() => {})
-@@ -395,6 +405,9 @@ export function ChatView({
+@@ -395,6 +402,9 @@ export function ChatView({
                t={t}
              />
            ))}
@@ -149,7 +141,7 @@ index 36824d2..c66c3d2 100644
    padding: 2px 0;
  }
 diff --git a/packages/client/ui-conversation/src/client/chat/MessageItem.tsx b/packages/client/ui-conversation/src/client/chat/MessageItem.tsx
-index 00b5110..0c9cb6f 100644
+index 00b5110..1074b4c 100644
 --- a/packages/client/ui-conversation/src/client/chat/MessageItem.tsx
 +++ b/packages/client/ui-conversation/src/client/chat/MessageItem.tsx
 @@ -9,7 +9,7 @@ import type {
@@ -165,7 +157,7 @@ index 00b5110..0c9cb6f 100644
    )
  }
  
-+/** Browser-preview user bubble shown during image serialization and Host admission. */
++/** Browser-preview user bubble shown until admission fails or its durable event becomes observable. */
 +export function PendingImageSubmissionBubble({ submission, t }: {
 +  submission: PendingImageSubmission
 +  t: ChatViewSlotProps['t']
@@ -200,7 +192,7 @@ index 00b5110..0c9cb6f 100644
  export const UserMessageNodeView = memo(function UserMessageNodeView({
    node, loadImage, t,
 diff --git a/packages/client/ui-conversation/src/client/contract/slots.ts b/packages/client/ui-conversation/src/client/contract/slots.ts
-index 2125914..568fc5c 100644
+index 2125914..a56afde 100644
 --- a/packages/client/ui-conversation/src/client/contract/slots.ts
 +++ b/packages/client/ui-conversation/src/client/contract/slots.ts
 @@ -30,6 +30,20 @@ export interface ComposerAttachment {
@@ -224,17 +216,28 @@ index 2125914..568fc5c 100644
  declare module '@deepseek-ai/dsh-client-ui-slots' {
    interface SlotMap {
      /**
-@@ -673,6 +687,8 @@ export interface ChatScrollPosition {
+@@ -673,6 +687,10 @@ export interface ChatScrollPosition {
   * outside the view (layout orchestration; the session object layer).
   */
  export interface ChatViewInjected {
-+  /** Browser-only image submissions awaiting their matching durable session event. */
-+  pendingSubmissions: ObservableSnapshot<readonly PendingImageSubmission[]>
++  /** Framework-bound browser previews awaiting their matching durable session event. */
++  hooks: {
++    pendingSubmissions: ObservableSnapshot<readonly PendingImageSubmission[]>
++  }
    /** Selection write + details panel opening in one gesture (store action + layout orchestration). */
    openDetails: (target: SelectionTarget) => void
    /**
+@@ -710,7 +728,7 @@ export interface ChatViewInjected {
+ /** Full chat-view component props: runtime & its Tool/command/tail render shares & store & injected & locale seat. */
+ export type ChatViewSlotProps =
+   PropsRuntime<'conversation.view'> & PropsRenderSlots<'conversation.chat.node'>
+-  & PropsStore<ChatStore> & ChatViewInjected & PropsLocale<'conversation'>
++  & PropsStore<ChatStore> & InjectFace<ChatViewInjected> & PropsLocale<'conversation'>
+ 
+ /**
+  * Injected share of the details slot: the panel is otherwise a pure reader of
 diff --git a/packages/client/ui-conversation/src/client/service.ts b/packages/client/ui-conversation/src/client/service.ts
-index 198eee5..0942a9f 100644
+index 198eee5..a5bff9d 100644
 --- a/packages/client/ui-conversation/src/client/service.ts
 +++ b/packages/client/ui-conversation/src/client/service.ts
 @@ -12,9 +12,12 @@ import type { Context } from '@deepseek-ai/cordis'
@@ -252,7 +255,16 @@ index 198eee5..0942a9f 100644
  import type { QueueAction, QueueItemId } from './contract/queue.ts'
  import type { ComposerBlocks } from './input/blocks.ts'
  import type { DraftAttachmentId, SessionInputResolver } from './input/contract.ts'
-@@ -54,7 +57,7 @@ export interface IConversation {
+@@ -48,13 +51,15 @@ export interface IConversation {
+   updateQueue(itemId: QueueItemId, action: QueueAction): Promise<void>
+   /**
+    * Cancel the scoped session's in-flight turn while preserving its pending Queue.
+-   * @returns completion; failures reject as in send.
++   * Success retires image previews assigned to the canceled turn; queued
++   * previews and submissions begun while cancellation settles remain.
++   * @returns completion; failures reject as in send and retain every preview.
+    */
+   cancel(): Promise<void>
    /**
     * Pull one older history page for the scoped session.
     * @returns completion of the page pull.
@@ -261,13 +273,14 @@ index 198eee5..0942a9f 100644
    loadOlder(): Promise<void>
  }
  
-@@ -74,6 +77,13 @@ interface ImageUrlEntry {
+@@ -74,6 +79,14 @@ interface ImageUrlEntry {
    readonly pending: Promise<string>
  }
  
 +interface PendingSubmissionTracking {
 +  readonly session: SessionFace
 +  readonly afterSeq: number
++  readonly retireOnCancel: boolean
 +  expectedAttachmentIds: readonly string[] | null
 +  readonly unsubscribe: () => void
 +}
@@ -275,7 +288,7 @@ index 198eee5..0942a9f 100644
  /** Unsupported browser-declared image type, localized by the UI boundary. */
  export class UnsupportedImageMediaTypeError extends Error {
    /** Browser-declared MIME value, possibly empty. */
-@@ -97,6 +107,8 @@ export class ConversationController extends Service implements IConversation {
+@@ -97,6 +110,8 @@ export class ConversationController extends Service implements IConversation {
    private readonly imageUrls = new Map<string, ImageUrlEntry>()
    private readonly imageGenerations = new Map<SessionId, number>()
    private readonly createdImageUrls = new Set<string>()
@@ -284,7 +297,7 @@ index 198eee5..0942a9f 100644
    private disposed = false
  
    /**
-@@ -117,6 +129,10 @@ export class ConversationController extends Service implements IConversation {
+@@ -117,6 +132,10 @@ export class ConversationController extends Service implements IConversation {
        this.draftAttachments.clear()
        this.imageUrls.clear()
        this.imageGenerations.clear()
@@ -295,7 +308,7 @@ index 198eee5..0942a9f 100644
      }, 'conversation attachment URL cache')
    }
  
-@@ -149,11 +165,112 @@ export class ConversationController extends Service implements IConversation {
+@@ -149,11 +168,121 @@ export class ConversationController extends Service implements IConversation {
      if (attachments.length !== imageIds.length) {
        throw new Error('conversation.sendSession: one or more draft images are no longer available')
      }
@@ -304,7 +317,13 @@ index 198eee5..0942a9f 100644
 -    const result = await session.prompt(content, mode)
 -    if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
 -    this.releaseDraftImages(attachments)
-+    const pending = attachments.length === 0 ? undefined : this.beginPendingSubmission(session, text, attachments)
++    if (attachments.length === 0) {
++      const content = text === '' ? [] : [{ type: 'text' as const, text }]
++      const result = await session.prompt(content, mode)
++      if (!result.ok) throw new Error(`conversation.send failed: ${result.error.code}: ${result.error.message}`)
++      return
++    }
++    const pending = this.beginPendingSubmission(session, text, attachments, mode)
 +    let admitted = false
 +    try {
 +      // Serialize and content-hash in parallel, before the prompt.
@@ -312,7 +331,7 @@ index 198eee5..0942a9f 100644
 +        this.serializeImages(attachments.map(attachment => attachment.file)),
 +        Promise.all(attachments.map(attachment => fileSha256(attachment.file))),
 +      ])
-+      if (pending !== undefined) this.setPendingSubmissionDigests(pending.id, digests)
++      this.setPendingSubmissionDigests(pending.id, digests)
 +      // Pre-cache the just-sent preview URLs before prompting, so the durable
 +      // message can reuse browser-held bytes regardless of whether its event
 +      // projection arrives before or after the unary response. Drafts stay
@@ -335,14 +354,14 @@ index 198eee5..0942a9f 100644
 +      // durable event can reach the Session snapshot later, so retain the
 +      // browser preview until that event is observable. Failed admission or
 +      // serialization has no durable handoff and retires it here.
-+      if (pending !== undefined && !admitted) this.endPendingSubmission(session.sessionId, pending.id)
++      if (!admitted) this.endPendingSubmission(session.sessionId, pending.id)
 +    }
 +  }
 +
 +  /**
 +   * Return the stable browser-only submission source for one session.
 +   * @param sessionId - owning session.
-+   * @returns observable submissions awaiting Host admission.
++   * @returns observable submissions awaiting a matching durable session event.
 +   */
 +  pendingSubmissionsFor(sessionId: SessionId): SnapshotStore<readonly PendingImageSubmission[]> {
 +    const existing = this.pendingSubmissionStores.get(sessionId)
@@ -356,7 +375,9 @@ index 198eee5..0942a9f 100644
 +    session: SessionFace,
 +    text: string,
 +    attachments: readonly ComposerAttachment[],
++    mode: InputSubmitMode,
 +  ): PendingImageSubmission {
++    const snapshot = session.getSnapshot()
 +    const submission: PendingImageSubmission = {
 +      id: crypto.randomUUID(),
 +      text,
@@ -368,11 +389,12 @@ index 198eee5..0942a9f 100644
 +    }
 +    const store = this.pendingSubmissionsFor(session.sessionId)
 +    store.set([...store.getSnapshot(), submission])
-+    const afterSeq = latestSubmittedImageSeq(session.getSnapshot().nodes)
++    const afterSeq = latestSubmittedImageSeq(snapshot.nodes)
 +    const unsubscribe = session.subscribe(() => { this.reconcilePendingSubmissions(session) })
 +    this.pendingSubmissionTracking.set(submission.id, {
 +      session,
 +      afterSeq,
++      retireOnCancel: mode === 'steer' || !snapshot.running,
 +      expectedAttachmentIds: null,
 +      unsubscribe,
 +    })
@@ -413,7 +435,7 @@ index 198eee5..0942a9f 100644
    }
  
    /**
-@@ -205,6 +322,67 @@ export class ConversationController extends Service implements IConversation {
+@@ -205,6 +334,67 @@ export class ConversationController extends Service implements IConversation {
      for (const attachment of attachments) this.releaseDraftImage(attachment.id)
    }
  
@@ -481,7 +503,26 @@ index 198eee5..0942a9f 100644
    /**
     * Resolve and cache one session-authorized historical image URL.
     * @param sessionId - owning session authorization scope.
-@@ -317,12 +495,40 @@ export class ConversationController extends Service implements IConversation {
+@@ -275,11 +465,17 @@ export class ConversationController extends Service implements IConversation {
+     }
+   }
+ 
+-  /** Cancel the scoped session's in-flight turn while preserving Queue (failures land in promptError and reject, as in send). */
++  /** Cancel the scoped turn and retire its captured previews only after cancellation succeeds. */
+   async cancel(): Promise<void> {
+     const session = this.scopedSession('cancel')
++    const pendingIds = [...this.pendingSubmissionTracking]
++      .filter(([, tracking]) => tracking.session === session && tracking.retireOnCancel)
++      .map(([id]) => id)
+     const result = await session.cancel()
+     if (!result.ok) throw new Error(`conversation.cancel failed: ${result.error.code}: ${result.error.message}`)
++    // The captured ids belong to the active turn. Queue submissions are not
++    // canceled, and submissions begun while the RPC settles are not captured.
++    for (const id of pendingIds) this.endPendingSubmission(session.sessionId, id)
+   }
+ 
+   /** Pull one older history page for the scoped Session. */
+@@ -317,12 +513,40 @@ export class ConversationController extends Service implements IConversation {
      return Promise.all(images.map(async file => ({
        type: 'image' as const,
        mediaType: imageMediaType(file.type),
@@ -523,7 +564,7 @@ index 198eee5..0942a9f 100644
  function imageMediaType(value: string): ImageMediaType {
    switch (value) {
      case 'image/png':
-@@ -344,6 +550,49 @@ function bytesToBase64(data: Uint8Array): string {
+@@ -344,6 +568,49 @@ function bytesToBase64(data: Uint8Array): string {
    return btoa(binary)
  }
  
