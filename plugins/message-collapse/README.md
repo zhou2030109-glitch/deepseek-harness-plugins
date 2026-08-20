@@ -13,13 +13,17 @@
 - **可折叠展开**：点击"执行过程"标题行展开/折叠组内内容
 - **失败标记**：包含失败的执行组会标红显示
 
+## 基准版本
+
+本补丁基于 DeepSeek Harness 官方 `dsh-0.1.0-rc.8`（提交 `141eb6fef8`）。低于该版本请先升级 DSH；其他版本运行 `git apply --check` 验证，冲突时手动移植同样的分组逻辑，不要使用 `--reject` 强行应用。
+
 ## 改动内容
 
 ### 新增文件
 
 - `ChatFlow.tsx` — 聊天流重组器，将平铺节点列表重新分组为 `node` 行和 `execution` 组
 
-### 修改文件
+### 修改文件（全部包含在 `message-collapse.patch` 中）
 
 | 文件 | 改动 |
 |------|------|
@@ -33,17 +37,18 @@
 
 ## 安装
 
+从 DSH 源码仓库根目录执行：
+
 ```bash
-cd <DSH source>/packages/client/ui-conversation/src/client
-
 # 1. 复制新文件
-cp message-collapse/ChatFlow.tsx chat/ChatFlow.tsx
+cp <本仓库路径>/plugins/message-collapse/ChatFlow.tsx packages/client/ui-conversation/src/client/chat/ChatFlow.tsx
 
-# 2. 应用 patches
-git apply message-collapse/message-collapse.patch
-git apply message-collapse/AssistantNodeView.tsx.patch
+# 2. 应用补丁
+git apply <本仓库路径>/plugins/message-collapse/message-collapse.patch
 
 # 3. 重新构建并部署
+pnpm run build:lib:client
+pnpm run build:web
 ```
 
 ## 效果

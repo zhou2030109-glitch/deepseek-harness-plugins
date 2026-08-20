@@ -1,0 +1,66 @@
+diff --git a/packages/host/apiproxy/src/api-proxy.ts b/packages/host/apiproxy/src/api-proxy.ts
+index ccb2d6d20c..45b6d93f48 100644
+--- a/packages/host/apiproxy/src/api-proxy.ts
++++ b/packages/host/apiproxy/src/api-proxy.ts
+@@ -242,12 +242,19 @@ function paginate(
+     if (!MESSAGE_TYPES.has(event.type) || !isAppendSurfaceEvent(event)) continue
+     count++
+     const sources = (event as { sourceEventSeqs?: number[] }).sourceEventSeqs
++    const source = event.type === 'user/message'
++      ? event.data.source as { visionFallback?: unknown; displaySeq?: unknown }
++      : undefined
++    const displaySeq = source?.visionFallback === 'model-input' && Number.isSafeInteger(source.displaySeq)
++      ? source.displaySeq as number
++      : undefined
+     let groupStart = event.seq
+     if (sources !== undefined) {
+       for (const source of sources) {
+         if (source < groupStart) groupStart = source
+       }
+     }
++    if (displaySeq !== undefined && displaySeq < groupStart) groupStart = displaySeq
+     if (count >= maxMessages) {
+       cut = groupStart
+       break
+@@ -2213,11 +2220,16 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+             if (pendingImage || messagesHaveImage(found.agent.session.deriveMessages())) {
+               const info = await ctx.llm.resolveModelInfo(resolved.provider, resolved.model)
+               if (info.inputModalities !== undefined && !info.inputModalities.includes('image')) {
+-                return err(request, {
+-                  code: 'model-unavailable',
+-                  message: `Model "${resolved.model}" does not accept image input, but this session already contains images; select an image-capable model.`,
+-                  details: { provider, model },
+-                })
++                const historyHasImage = messagesHaveImage(found.agent.session.deriveMessages())
++                const fallbackReady = !historyHasImage && pendingImage
++                  && await ctx.get('imageInputFallback')?.canHandle(resolved) === true
++                if (!fallbackReady) {
++                  return err(request, {
++                    code: 'model-unavailable',
++                    message: `Model "${resolved.model}" does not accept image input, but this session already contains images; select an image-capable model.`,
++                    details: { provider, model },
++                  })
++                }
+               }
+             }
+             const selected: ModelSelection = {
+@@ -2402,11 +2414,14 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+               const current = selectionFor(agent).current
+               const modelInfo = await ctx.llm.resolveModelInfo(current.provider, current.model)
+               if (modelInfo.inputModalities !== undefined && !modelInfo.inputModalities.includes('image')) {
+-                return err(request, {
+-                  code: 'attachment-error',
+-                  message: `Model "${current.model}" does not support image input.`,
+-                  details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' },
+-                })
++                const fallbackReady = await ctx.get('imageInputFallback')?.canHandle(current) === true
++                if (!fallbackReady) {
++                  return err(request, {
++                    code: 'attachment-error',
++                    message: `Model "${current.model}" does not support image input.`,
++                    details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' },
++                  })
++                }
+               }
+             }
+             const durable = await durablePromptContent(ctx, content)

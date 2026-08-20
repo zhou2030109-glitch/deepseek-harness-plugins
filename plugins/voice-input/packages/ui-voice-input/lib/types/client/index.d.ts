@@ -5,7 +5,7 @@
  * `@deepseek-ai/dsh-voice-input` Remote.
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client';
-/** Required services: slot registration and the mounted voiceInput Remote. */
+/** Required services: the slot registry and the mounted voiceInput Remote namespace. */
 export declare const inject: string[];
 /**
  * Client plugin body: register the mic button into the composer's right tool

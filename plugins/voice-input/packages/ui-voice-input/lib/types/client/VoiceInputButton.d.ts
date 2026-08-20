@@ -29,11 +29,11 @@ interface VoiceInputActions {
     setDraft(text: string): void;
 }
 interface VoiceInputButtonProps {
-    remote: VoiceInputRemote;
-    useInput: (selector: (state: {
+    remote?: VoiceInputRemote;
+    useInput?: (selector: (state: {
         draft: string;
     }) => string) => string;
-    inputActions: VoiceInputActions;
+    inputActions?: VoiceInputActions;
 }
 export declare function VoiceInputButton(props: VoiceInputButtonProps): React.ReactElement;
 export {};

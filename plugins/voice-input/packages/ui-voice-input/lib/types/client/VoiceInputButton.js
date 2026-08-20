@@ -24,39 +24,9 @@ function MicIcon() {
         strokeLinejoin: 'round',
     }, React.createElement('rect', { x: 9, y: 2, width: 6, height: 12, rx: 3 }), React.createElement('path', { d: 'M5 10v1a7 7 0 0 0 14 0v-1' }), React.createElement('line', { x1: 12, y1: 18, x2: 12, y2: 22 }));
 }
-function encodeWav(samples, sampleRate) {
-    const n = samples.length;
-    const buffer = new ArrayBuffer(44 + n * 2);
-    const view = new DataView(buffer);
-    const writeStr = (off, str) => {
-        for (let i = 0; i < str.length; i++)
-            view.setUint8(off + i, str.charCodeAt(i));
-    };
-    writeStr(0, 'RIFF');
-    view.setUint32(4, 36 + n * 2, true);
-    writeStr(8, 'WAVE');
-    writeStr(12, 'fmt ');
-    view.setUint32(16, 16, true);
-    view.setUint16(20, 1, true);
-    view.setUint16(22, 1, true);
-    view.setUint32(24, sampleRate, true);
-    view.setUint32(28, sampleRate * 2, true);
-    view.setUint16(32, 2, true);
-    view.setUint16(34, 16, true);
-    writeStr(36, 'data');
-    view.setUint32(40, n * 2, true);
-    for (let i = 0; i < n; i++) {
-        let s = samples[i];
-        if (s > 1)
-            s = 1;
-        if (s < -1)
-            s = -1;
-        view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return buffer;
-}
-function toBase64(buffer) {
-    const bytes = new Uint8Array(buffer);
+/** Encode a Float32Array as base64 (raw PCM bytes, no WAV header). */
+function float32ToBase64(samples) {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
     const chunk = 0x8000;
     let binary = '';
     for (let i = 0; i < bytes.length; i += chunk) {
@@ -80,6 +50,32 @@ function toBase64(buffer) {
         out += (i + 2 < bytes.length) ? chars[b3 & 63] : '=';
     }
     return out;
+}
+/** Linear-interpolation resample to 16 kHz (the model's expected rate). */
+function resampleTo16k(samples, fromRate) {
+    if (fromRate === 16000)
+        return samples;
+    const ratio = 16000 / fromRate;
+    const newLen = Math.round(samples.length * ratio);
+    const out = new Float32Array(newLen);
+    for (let i = 0; i < newLen; i++) {
+        const srcIdx = i / ratio;
+        const lo = Math.floor(srcIdx);
+        const hi = Math.min(lo + 1, samples.length - 1);
+        const frac = srcIdx - lo;
+        out[i] = samples[lo] * (1 - frac) + samples[hi] * frac;
+    }
+    return out;
+}
+/** Check if samples are effectively silent (all near-zero). */
+function isSilent(samples) {
+    let max = 0;
+    for (let i = 0; i < samples.length; i++) {
+        const a = Math.abs(samples[i]);
+        if (a > max)
+            max = a;
+    }
+    return max < 0.001;
 }
 const VOICE_CSS = `
 .dsh-voice-wrap { display: inline-flex; align-items: center; gap: 6px; }
@@ -108,9 +104,9 @@ const VOICE_CSS = `
   max-width: 220px; overflow: hidden; text-overflow: ellipsis;
 }
 `;
-const TICKS = 6;
+const TICKS = 3;
 export function VoiceInputButton(props) {
-    const draft = props.useInput((s) => s.draft);
+    const draft = props.useInput ? props.useInput(s => s.draft) : '';
     const [status, setStatus] = React.useState('idle');
     const [errorText, setErrorText] = React.useState('');
     const recRef = React.useRef(null);
@@ -137,11 +133,16 @@ export function VoiceInputButton(props) {
         return samples;
     };
     const transcribe = async (rec, final) => {
-        const samples = concatSamples(rec);
-        if (!samples)
+        const raw = concatSamples(rec);
+        if (!raw)
             return '';
-        const wav = encodeWav(samples, rec.sampleRate || 16000);
-        const b64 = toBase64(wav);
+        if (!props.remote || typeof props.remote.transcribe !== 'function')
+            return '';
+        // Resample to 16 kHz (the model's expected rate)
+        const samples = resampleTo16k(raw, rec.sampleRate || 16000);
+        if (isSilent(samples))
+            return '';
+        const b64 = float32ToBase64(samples);
         const answered = await props.remote.transcribe({ b64, final });
         return (answered.ok && typeof answered.value.text === 'string') ? answered.value.text : '';
     };
@@ -161,7 +162,7 @@ export function VoiceInputButton(props) {
         }
         if (rec.stream) {
             try {
-                rec.stream.getTracks().forEach((t) => t.stop());
+                rec.stream.getTracks().forEach(t => t.stop());
             }
             catch { /* noop */ }
         }
@@ -192,12 +193,19 @@ export function VoiceInputButton(props) {
             });
             const AC = g.AudioContext || g.webkitAudioContext;
             if (!AC) {
-                stream.getTracks().forEach((t) => t.stop());
+                stream.getTracks().forEach(t => t.stop());
                 setErrorText('当前浏览器不支持音频采集');
                 setStatus('error');
                 return;
             }
             const audioCtx = new AC({ sampleRate: 16000 });
+            // Resume context (Chromium starts suspended until a user gesture resumes it)
+            if (typeof audioCtx.resume === 'function') {
+                try {
+                    await audioCtx.resume();
+                }
+                catch { /* noop */ }
+            }
             const sourceNode = audioCtx.createMediaStreamSource(stream);
             const processor = audioCtx.createScriptProcessor(4096, 1, 1);
             const rec = {
@@ -258,6 +266,13 @@ export function VoiceInputButton(props) {
                     await rec.inFlight;
                 }
                 catch { /* noop */ }
+            }
+            // Quick silence check before sending to host
+            const raw = concatSamples(rec);
+            if (!raw || isSilent(resampleTo16k(raw, rec.sampleRate || 16000))) {
+                setStatus('error');
+                setErrorText('麦克风没有收到声音，请检查麦克风是否正常');
+                return;
             }
             const text = await transcribe(rec, true);
             if (text) {

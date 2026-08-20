@@ -19,10 +19,10 @@
 
 ## 基准版本与改动范围
 
-补丁基于 DeepSeek Harness 提交：
+补丁基于 DeepSeek Harness 官方 dsh-0.1.0-rc.8 提交：
 
 ```text
-47f943859bef60e4160492346772ded9b24f765a
+141eb6fef8（dsh-0.1.0-rc.8）
 ```
 
 仅修改 `packages/client/ui-conversation` 的 6 个文件：

@@ -58,9 +58,9 @@ function MicIcon(): React.ReactElement {
     strokeLinecap: 'round',
     strokeLinejoin: 'round',
   },
-    React.createElement('rect', { x: 9, y: 2, width: 6, height: 12, rx: 3 }),
-    React.createElement('path', { d: 'M5 10v1a7 7 0 0 0 14 0v-1' }),
-    React.createElement('line', { x1: 12, y1: 18, x2: 12, y2: 22 }),
+  React.createElement('rect', { x: 9, y: 2, width: 6, height: 12, rx: 3 }),
+  React.createElement('path', { d: 'M5 10v1a7 7 0 0 0 14 0v-1' }),
+  React.createElement('line', { x1: 12, y1: 18, x2: 12, y2: 22 }),
   )
 }
 
@@ -148,7 +148,7 @@ const VOICE_CSS = `
 const TICKS = 3
 
 export function VoiceInputButton(props: VoiceInputButtonProps): React.ReactElement {
-  const draft = props.useInput ? props.useInput((s) => s.draft) : ''
+  const draft = props.useInput ? props.useInput(s => s.draft) : ''
   const [status, setStatus] = React.useState<'idle' | 'recording' | 'transcribing' | 'error'>('idle')
   const [errorText, setErrorText] = React.useState('')
   const recRef = React.useRef<Recording | null>(null)
@@ -189,7 +189,7 @@ export function VoiceInputButton(props: VoiceInputButtonProps): React.ReactEleme
   const teardownAudio = (rec: Recording): void => {
     if (rec.processor) { rec.processor.onaudioprocess = null; try { rec.processor.disconnect() } catch { /* noop */ } }
     if (rec.sourceNode) { try { rec.sourceNode.disconnect() } catch { /* noop */ } }
-    if (rec.stream) { try { rec.stream.getTracks().forEach((t) => t.stop()) } catch { /* noop */ } }
+    if (rec.stream) { try { rec.stream.getTracks().forEach(t => t.stop()) } catch { /* noop */ } }
     if (rec.audioCtx) { try { void rec.audioCtx.close() } catch { /* noop */ } }
   }
 
@@ -211,7 +211,7 @@ export function VoiceInputButton(props: VoiceInputButtonProps): React.ReactEleme
       })
       const AC = g.AudioContext || g.webkitAudioContext
       if (!AC) {
-        stream.getTracks().forEach((t) => t.stop())
+        stream.getTracks().forEach(t => t.stop())
         setErrorText('当前浏览器不支持音频采集')
         setStatus('error')
         return

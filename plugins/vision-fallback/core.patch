@@ -1,0 +1,68 @@
+diff --git a/packages/core/agent/src/model-selection.ts b/packages/core/agent/src/model-selection.ts
+index 2cb7e4468f..16df63e2eb 100644
+--- a/packages/core/agent/src/model-selection.ts
++++ b/packages/core/agent/src/model-selection.ts
+@@ -24,6 +24,34 @@ export interface ModelSelectionRef {
+   assembled: ModelSelection | undefined
+ }
+ 
++/** Optional host capability that can turn image prompts into text for a text-only selection. */
++export interface ImageInputFallback {
++  /**
++   * Return whether this fallback is ready to handle images for the selected conversation model.
++   * @param selection - the currently selected conversation model.
++   * @returns whether image prompts can be served for that selection.
++   */
++  canHandle(selection: ModelSelection): Promise<boolean>
++}
++
++declare module '@deepseek-ai/cordis' {
++  interface Context {
++    /** Optional deployment-owned image-to-text fallback used by prompt admission. */
++    imageInputFallback: ImageInputFallback
++  }
++}
++
++const installedSelections = new WeakMap<Context, ModelSelectionRef>()
++
++/**
++ * Read the mutable selection installed on one exact Agent context.
++ * @param agentCtx - Agent-scoped context that may own a selection.
++ * @returns The installed selection reference, or undefined when absent.
++ */
++export function installedModelSelection(agentCtx: Context): ModelSelectionRef | undefined {
++  return installedSelections.get(agentCtx)
++}
++
+ /**
+  * Couple one mutable selection to Agent-scoped prompt assembly and request routing.
+  * Prompt assembly snapshots the selected model before delegating, then applies
+@@ -37,6 +65,10 @@ export interface ModelSelectionRef {
+  * @returns Disposer for both scoped waterfall listeners.
+  */
+ export function installModelSelection(agentCtx: Context, selection: ModelSelectionRef): () => void {
++  if (installedSelections.has(agentCtx)) {
++    throw new Error('model selection is already installed on this Agent context')
++  }
++  installedSelections.set(agentCtx, selection)
+   const disposeAssembly = agentCtx.on('system-prompt/assemble', async (_assembly, _context, next) => {
+     const selected = selection.current
+     const assembled = await next()
+@@ -71,5 +103,6 @@ export function installModelSelection(agentCtx: Context, selection: ModelSelecti
+   return () => {
+     disposeAssembly()
+     disposeRequest()
++    installedSelections.delete(agentCtx)
+   }
+ }
+diff --git a/packages/core/session/src/known-event-types.ts b/packages/core/session/src/known-event-types.ts
+index 098743dd8a..90c8790893 100644
+--- a/packages/core/session/src/known-event-types.ts
++++ b/packages/core/session/src/known-event-types.ts
+@@ -64,5 +64,6 @@ export const KNOWN_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
+   'turn/end',
+   'turn/start',
+   'user/message',
++  'vision-fallback/display',
+   'web/deepseek-search-llm-request',
+ ])

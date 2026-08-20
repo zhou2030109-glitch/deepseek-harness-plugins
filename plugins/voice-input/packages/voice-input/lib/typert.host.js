@@ -39,7 +39,7 @@ export const TYPERT = {
         typeSymbol: '@deepseek-ai/dsh-voice-input/types#VoiceTranscribeResult',
         schema: _deepseek_ai_dsh_voice_input_voiceInput_transcribe_result$schema,
       },
-      sourceLocation: {"file":"packages/voice/voice-input/src/index.ts","line":102,"column":9},
+      sourceLocation: {"file":"packages/voice/voice-input/src/index.ts","line":101,"column":9},
     },
   ],
   model: {

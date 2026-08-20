@@ -18,6 +18,11 @@
 - `readAsDataURL` 在浏览器原生代码中完成 base64 编码（C++ 层），不阻塞 JS 主线程
 - 结果完全一致：`data:` URL 的 base64 载荷与手动编码字节相同
 
+
+## 基准版本
+
+本补丁基于 DeepSeek Harness 官方 `dsh-0.1.0-rc.8`（提交 `141eb6fef8`）。其他版本运行 `git apply --check` 验证，冲突时手动移植同样的 `FileReader` 替换，不要使用 `--reject` 强行应用。
+
 ## 改动
 
 只修改 `service.ts` 一个文件：

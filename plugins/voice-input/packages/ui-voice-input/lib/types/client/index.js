@@ -5,23 +5,23 @@
  * `@deepseek-ai/dsh-voice-input` Remote.
  */
 import { VoiceInputButton } from "./VoiceInputButton.js";
-/** Required services: slot registration and the mounted voiceInput Remote. */
-export const inject = ['slots', 'remote'];
+/** Required services: the slot registry and the mounted voiceInput Remote namespace. */
+export const inject = ['slots', 'remote', 'remote.voiceInput'];
 /**
  * Client plugin body: register the mic button into the composer's right tool
  * row once the slot declarer and the voiceInput Remote are both ready.
  * @param ctx - client root context.
  */
 export function apply(ctx) {
-    ctx.inject(['slots', 'remote'], (scope) => {
-        const remote = scope.remote;
-        scope.slots.inject('conversation.input.right', () => scope.slots.register({
+    ctx.slots.inject('conversation.input.right', () => {
+        const dispose = ctx.slots.register({
             name: 'conversation.input.right',
             id: 'voice-input',
             order: 100,
             label: '语音输入',
-            inject: () => ({ remote: remote.voiceInput }),
-        }, VoiceInputButton));
+            inject: () => ({ remote: ctx.remote.voiceInput }),
+        }, VoiceInputButton);
+        return dispose;
     });
 }
 //# sourceMappingURL=index.js.map

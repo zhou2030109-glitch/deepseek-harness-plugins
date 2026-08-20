@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
 		//#endregion
 		let react = require("react");
 		react = __toESM(react, 1);
-		//#region src/client/VoiceInputButton.tsx
+		//#region lib/types/client/VoiceInputButton.js
 		/**
 		* Voice input button: records 16 kHz mono PCM through getUserMedia, encodes to
 		* WAV base64, streams re-transcriptions of the growing buffer to the composer
@@ -316,7 +316,13 @@ window.__ModuleLoader__.load({
 			}, react.default.createElement(MicIcon)), errorText ? react.default.createElement("span", { className: "dsh-voice-error" }, errorText) : null));
 		}
 		//#endregion
-		//#region src/client/index.ts
+		//#region lib/types/client/index.js
+		/**
+		* Voice input plugin, browser half: a mic button in the conversation input's
+		* right tool row. Records through getUserMedia, streams re-transcriptions
+		* while speaking, and punctuates on stop through the
+		* `@deepseek-ai/dsh-voice-input` Remote.
+		*/
 		/** Required services: the slot registry and the mounted voiceInput Remote namespace. */
 		const inject = [
 			"slots",
